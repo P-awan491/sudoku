@@ -24,21 +24,65 @@ const StatsIcon = (p) => <Icon {...p}><path d="M3 3v18h18"/><path d="M7 16v-4"/>
 /* ===== CONSTANTS ===== */
 const DIFFICULTIES = ['easy', 'medium', 'hard', 'expert', 'master', 'extreme'];
 const MAX_MISTAKES = 3;
+const createEmptyNotes = () => Array.from({ length: 81 }, () => new Set());
+const createDefaultStats = () => DIFFICULTIES.reduce((acc, difficulty) => {
+  acc[difficulty] = { played: 0, won: 0, bestTime: null };
+  return acc;
+}, {});
+
+const createGameState = (difficulty = 'easy') => {
+  const { puzzle, solution } = generateSudoku(difficulty);
+
+  return {
+    board: puzzle.map(row => [...row]),
+    initialBoard: puzzle.map(row => [...row]),
+    solution,
+    difficulty,
+    notes: createEmptyNotes(),
+    mistakes: 0,
+    timer: 0,
+    history: [],
+  };
+};
+
+const loadInitialGameState = () => {
+  const saved = localStorage.getItem('sudoku_current_game');
+
+  if (!saved) return createGameState('easy');
+
+  try {
+    const state = JSON.parse(saved);
+    return {
+      ...state,
+      notes: state.notes.map(values => new Set(values)),
+      history: state.history.map(item => ({
+        board: item.board,
+        notes: item.notes.map(values => new Set(values)),
+      })),
+    };
+  } catch (error) {
+    console.error('Failed to load saved game', error);
+    localStorage.removeItem('sudoku_current_game');
+    return createGameState('easy');
+  }
+};
 
 /* ===== MAIN APP ===== */
 export default function App() {
+  const [initialGame] = useState(loadInitialGameState);
+
   // ---- Game State ----
-  const [board, setBoard] = useState(null);
-  const [initialBoard, setInitialBoard] = useState(null);
-  const [solution, setSolution] = useState(null);
+  const [board, setBoard] = useState(initialGame.board);
+  const [initialBoard, setInitialBoard] = useState(initialGame.initialBoard);
+  const [solution, setSolution] = useState(initialGame.solution);
   const [selectedCell, setSelectedCell] = useState(null);
-  const [difficulty, setDifficulty] = useState('easy');
-  const [notes, setNotes] = useState(() => Array.from({ length: 81 }, () => new Set()));
+  const [difficulty, setDifficulty] = useState(initialGame.difficulty);
+  const [notes, setNotes] = useState(initialGame.notes);
   const [isNotesMode, setIsNotesMode] = useState(false);
-  const [mistakes, setMistakes] = useState(0);
-  const [timer, setTimer] = useState(0);
+  const [mistakes, setMistakes] = useState(initialGame.mistakes);
+  const [timer, setTimer] = useState(initialGame.timer);
   const [isPaused, setIsPaused] = useState(false);
-  const [history, setHistory] = useState([]);
+  const [history, setHistory] = useState(initialGame.history);
   const [gameWon, setGameWon] = useState(false);
   const [gameLost, setGameLost] = useState(false);
   
@@ -49,14 +93,7 @@ export default function App() {
   });
   const [stats, setStats] = useState(() => {
     const saved = localStorage.getItem('sudoku_stats');
-    return saved ? JSON.parse(saved) : {
-      easy: { played: 0, won: 0, bestTime: null },
-      medium: { played: 0, won: 0, bestTime: null },
-      hard: { played: 0, won: 0, bestTime: null },
-      expert: { played: 0, won: 0, bestTime: null },
-      master: { played: 0, won: 0, bestTime: null },
-      extreme: { played: 0, won: 0, bestTime: null },
-    };
+    return saved ? JSON.parse(saved) : createDefaultStats();
   });
 
   // ---- Derived State ----
@@ -89,7 +126,7 @@ export default function App() {
     setSolution(sol);
     setDifficulty(diff);
     setSelectedCell(null);
-    setNotes(Array.from({ length: 81 }, () => new Set()));
+    setNotes(createEmptyNotes());
     setIsNotesMode(false);
     setMistakes(0);
     setTimer(0);
@@ -162,33 +199,7 @@ export default function App() {
       };
       localStorage.setItem('sudoku_current_game', JSON.stringify(gameState));
     }
-  }, [board, notes, mistakes, timer, history, gameWon, gameLost]);
-
-  // Load game state
-  useEffect(() => {
-    const saved = localStorage.getItem('sudoku_current_game');
-    if (saved) {
-      try {
-        const state = JSON.parse(saved);
-        setBoard(state.board);
-        setInitialBoard(state.initialBoard);
-        setSolution(state.solution);
-        setDifficulty(state.difficulty);
-        setNotes(state.notes.map(a => new Set(a)));
-        setMistakes(state.mistakes);
-        setTimer(state.timer);
-        setHistory(state.history.map(h => ({
-          board: h.board,
-          notes: h.notes.map(a => new Set(a))
-        })));
-      } catch (e) {
-        console.error("Failed to load game", e);
-        startNewGame('easy');
-      }
-    } else {
-      startNewGame('easy');
-    }
-  }, []);
+  }, [board, initialBoard, solution, difficulty, notes, mistakes, timer, history, gameWon, gameLost]);
 
   // ---- Handle Number Input ----
   const handleNumberInput = useCallback((num) => {
@@ -214,7 +225,7 @@ export default function App() {
     setHistory(prev => [...prev, { board: board.map(r => [...r]), notes: notes.map(s => new Set(s)) }]);
 
     if (solution[r][c] !== num) {
-      // Wrong answer — place it but mark as error
+      // Wrong answer - place it but mark as error
       const newBoard = board.map(row => [...row]);
       newBoard[r][c] = num;
       setBoard(newBoard);
@@ -263,7 +274,7 @@ export default function App() {
         return {
           ...prev,
           [d]: {
-            played: prev[d].played + 1,
+            played: Math.max(prev[d].played, prev[d].won + 1),
             won: prev[d].won + 1,
             bestTime: newBestTime
           }
@@ -274,7 +285,7 @@ export default function App() {
         confetti({ particleCount: 200, spread: 80, origin: { y: 0.6 }, colors: ['#325aaf', '#4a90d9', '#ffd700', '#2ecc71'] });
       }, 300);
     }
-  }, [selectedCell, isGameActive, isPaused, initialBoard, isNotesMode, board, solution, mistakes, notes, checkWin]);
+  }, [selectedCell, isGameActive, isPaused, initialBoard, isNotesMode, board, solution, mistakes, notes, checkWin, difficulty, timer]);
 
   // ---- Undo ----
   const handleUndo = useCallback(() => {
@@ -416,11 +427,15 @@ export default function App() {
           <span className="navbar-title">Sudoku</span>
         </div>
         <div className="navbar-links">
-          <button className="navbar-link" onClick={() => setShowStatsModal(true)}>
+          <button className="navbar-link" onClick={() => setShowStatsModal(true)} aria-label="Open statistics">
             <StatsIcon size={18} style={{ marginRight: '5px' }} />
             Stats
           </button>
-          <button className="navbar-link" onClick={() => setIsDarkMode(!isDarkMode)}>
+          <button
+            className="navbar-link icon-only"
+            onClick={() => setIsDarkMode(!isDarkMode)}
+            aria-label={isDarkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+          >
             {isDarkMode ? <SunIcon size={18} /> : <MoonIcon size={18} />}
           </button>
           <a href="#" className="navbar-link active">Classic</a>
@@ -459,7 +474,11 @@ export default function App() {
                 <span>Mistakes:</span>
                 <span className={`value ${mistakes > 0 ? 'error' : ''}`}>{mistakes}/{MAX_MISTAKES}</span>
               </div>
-              <button className="timer-btn" onClick={() => setIsPaused(p => !p)}>
+              <button
+                className="timer-btn"
+                onClick={() => setIsPaused(p => !p)}
+                aria-label={isPaused ? 'Resume timer' : 'Pause timer'}
+              >
                 {isPaused ? <PlayIcon size={16} /> : <PauseIcon size={16} />}
                 <span className="value">{formatTime(timer)}</span>
               </button>
@@ -479,9 +498,11 @@ export default function App() {
                     const idx = r * 9 + c;
                     const cellNotes = notes[idx];
                     return (
-                      <div
+                      <button
+                        type="button"
                         key={idx}
                         className={getCellClasses(r, c)}
+                        aria-label={`Row ${r + 1}, column ${c + 1}${cell ? `, value ${cell}` : ', empty'}`}
                         onClick={() => {
                           if (!isPaused && !gameWon && !gameLost) setSelectedCell([r, c]);
                         }}
@@ -497,7 +518,7 @@ export default function App() {
                             ))}
                           </div>
                         ) : null}
-                      </div>
+                      </button>
                     );
                   })
                 )}
@@ -536,6 +557,7 @@ export default function App() {
                     key={num}
                     className={`num-btn ${numberCounts[num] >= 9 ? 'exhausted' : ''}`}
                     onClick={() => handleNumberInput(num)}
+                    aria-label={`Enter ${num}`}
                   >
                     {num}
                     <span className="num-remaining">{9 - (numberCounts[num] || 0)}</span>
@@ -558,41 +580,41 @@ export default function App() {
       <section className="seo-content" id="rules">
         <h2>About Sudoku</h2>
         <p>
-          Sudoku is one of the most popular puzzle games of all time. The goal of Sudoku is to fill a 9×9 grid 
-          with numbers so that each row, column and 3×3 section contain all of the digits between 1 and 9. 
-          As a logic puzzle, Sudoku is also an excellent brain game. If you play Sudoku daily, you will soon 
+          Sudoku is one of the most popular puzzle games of all time. The goal of Sudoku is to fill a 9x9 grid
+          with numbers so that each row, column and 3x3 section contain all of the digits between 1 and 9.
+          As a logic puzzle, Sudoku is also an excellent brain game. If you play Sudoku daily, you will soon
           start to see improvements in your concentration and overall brain power.
         </p>
 
         <h2 id="tips">How to Play Sudoku</h2>
         <p>
-          The goal of Sudoku is to fill in a 9×9 grid with digits so that each column, row, and 3×3 section 
-          contain the numbers between 1 to 9. At the beginning of the game, the 9×9 grid will have some of the 
+          The goal of Sudoku is to fill in a 9x9 grid with digits so that each column, row, and 3x3 section
+          contain the numbers between 1 to 9. At the beginning of the game, the 9x9 grid will have some of the
           squares filled in. Your job is to use logic to fill in the missing digits and complete the grid.
         </p>
         <p>A move is incorrect if:</p>
         <ul>
           <li>Any row contains more than one of the same number from 1 to 9</li>
           <li>Any column contains more than one of the same number from 1 to 9</li>
-          <li>Any 3×3 grid contains more than one of the same number from 1 to 9</li>
+          <li>Any 3x3 grid contains more than one of the same number from 1 to 9</li>
         </ul>
 
         <h2>Sudoku Tips and Strategies</h2>
         <p>
-          <strong>Tip 1:</strong> Look for rows, columns or 3×3 sections that contain 5 or more numbers. 
-          Work through the remaining empty cells, trying the numbers that have not been used. In many cases, 
+          <strong>Tip 1:</strong> Look for rows, columns or 3x3 sections that contain 5 or more numbers.
+          Work through the remaining empty cells, trying the numbers that have not been used. In many cases,
           you will find numbers that can only be placed in one position.
         </p>
         <p>
-          <strong>Tip 2:</strong> Break the grid up visually into 3 columns and 3 rows. Each large column will 
-          have 3 of the 3×3 grids and each row will have 3 of the 3×3 grids. Now, look for columns or grids that 
-          have 2 of the same number. Logically, there must be a 3rd copy of the same number in the only remaining 
-          9-cell section. Look at each of the remaining 9 positions and see if you can find the location of the 
+          <strong>Tip 2:</strong> Break the grid up visually into 3 columns and 3 rows. Each large column will
+          have 3 of the 3x3 grids and each row will have 3 of the 3x3 grids. Now, look for columns or grids that
+          have 2 of the same number. Logically, there must be a 3rd copy of the same number in the only remaining
+          9-cell section. Look at each of the remaining 9 positions and see if you can find the location of the
           missing number.
         </p>
         <p>
-          <strong>Tip 3:</strong> Use the Notes feature to pencil in candidates for each empty cell. This 
-          helps you visualize possibilities and eliminate numbers systematically. When a cell has only one 
+          <strong>Tip 3:</strong> Use the Notes feature to pencil in candidates for each empty cell. This
+          helps you visualize possibilities and eliminate numbers systematically. When a cell has only one
           candidate remaining, that must be the answer.
         </p>
       </section>
