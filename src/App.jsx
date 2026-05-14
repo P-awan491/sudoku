@@ -24,11 +24,32 @@ const StatsIcon = (p) => <Icon {...p}><path d="M3 3v18h18"/><path d="M7 16v-4"/>
 /* ===== CONSTANTS ===== */
 const DIFFICULTIES = ['easy', 'medium', 'hard', 'expert', 'master', 'extreme'];
 const MAX_MISTAKES = 3;
+const SCORE_BY_DIFFICULTY = {
+  easy: 80,
+  medium: 120,
+  hard: 170,
+  expert: 230,
+  master: 300,
+  extreme: 380,
+};
+const HINT_PENALTY = 120;
+const MISTAKE_PENALTY = 80;
 const createEmptyNotes = () => Array.from({ length: 81 }, () => new Set());
 const createDefaultStats = () => DIFFICULTIES.reduce((acc, difficulty) => {
-  acc[difficulty] = { played: 0, won: 0, bestTime: null };
+  acc[difficulty] = { played: 0, won: 0, bestTime: null, bestScore: 0 };
   return acc;
 }, {});
+
+const normalizeStats = (stats = {}) => {
+  const defaults = createDefaultStats();
+  return DIFFICULTIES.reduce((acc, difficulty) => {
+    acc[difficulty] = {
+      ...defaults[difficulty],
+      ...(stats[difficulty] || {}),
+    };
+    return acc;
+  }, {});
+};
 
 const createGameState = (difficulty = 'easy') => {
   const { puzzle, solution } = generateSudoku(difficulty);
@@ -41,6 +62,8 @@ const createGameState = (difficulty = 'easy') => {
     notes: createEmptyNotes(),
     mistakes: 0,
     timer: 0,
+    score: 0,
+    streak: 0,
     history: [],
   };
 };
@@ -54,10 +77,14 @@ const loadInitialGameState = () => {
     const state = JSON.parse(saved);
     return {
       ...state,
+      score: state.score || 0,
+      streak: state.streak || 0,
       notes: state.notes.map(values => new Set(values)),
       history: state.history.map(item => ({
         board: item.board,
         notes: item.notes.map(values => new Set(values)),
+        score: item.score || 0,
+        streak: item.streak || 0,
       })),
     };
   } catch (error) {
@@ -81,6 +108,8 @@ export default function App() {
   const [isNotesMode, setIsNotesMode] = useState(false);
   const [mistakes, setMistakes] = useState(initialGame.mistakes);
   const [timer, setTimer] = useState(initialGame.timer);
+  const [score, setScore] = useState(initialGame.score);
+  const [streak, setStreak] = useState(initialGame.streak);
   const [isPaused, setIsPaused] = useState(false);
   const [history, setHistory] = useState(initialGame.history);
   const [gameWon, setGameWon] = useState(false);
@@ -93,7 +122,15 @@ export default function App() {
   });
   const [stats, setStats] = useState(() => {
     const saved = localStorage.getItem('sudoku_stats');
-    return saved ? JSON.parse(saved) : createDefaultStats();
+    if (!saved) return createDefaultStats();
+
+    try {
+      return normalizeStats(JSON.parse(saved));
+    } catch (error) {
+      console.error('Failed to load stats', error);
+      localStorage.removeItem('sudoku_stats');
+      return createDefaultStats();
+    }
   });
 
   // ---- Derived State ----
@@ -109,6 +146,18 @@ export default function App() {
     }));
     return counts;
   }, [board]);
+
+  const bestScore = stats[difficulty]?.bestScore || 0;
+  const completionPercent = useMemo(() => {
+    if (!board || !initialBoard) return 0;
+    const totalOpenCells = initialBoard.flat().filter(value => value === 0).length;
+    const filledOpenCells = board.flat().filter((value, index) => {
+      const row = Math.floor(index / 9);
+      const col = index % 9;
+      return initialBoard[row][col] === 0 && value !== 0;
+    }).length;
+    return totalOpenCells ? Math.round((filledOpenCells / totalOpenCells) * 100) : 100;
+  }, [board, initialBoard]);
 
   const [showStatsModal, setShowStatsModal] = useState(false);
   const [showKillerInfo, setShowKillerInfo] = useState(false);
@@ -130,6 +179,8 @@ export default function App() {
     setIsNotesMode(false);
     setMistakes(0);
     setTimer(0);
+    setScore(0);
+    setStreak(0);
     setIsPaused(false);
     setHistory([]);
     setGameWon(false);
@@ -192,14 +243,18 @@ export default function App() {
         notes: notes.map(s => Array.from(s)),
         mistakes,
         timer,
+        score,
+        streak,
         history: history.map(h => ({
           board: h.board,
-          notes: h.notes.map(s => Array.from(s))
+          notes: h.notes.map(s => Array.from(s)),
+          score: h.score,
+          streak: h.streak,
         }))
       };
       localStorage.setItem('sudoku_current_game', JSON.stringify(gameState));
     }
-  }, [board, initialBoard, solution, difficulty, notes, mistakes, timer, history, gameWon, gameLost]);
+  }, [board, initialBoard, solution, difficulty, notes, mistakes, timer, score, streak, history, gameWon, gameLost]);
 
   // ---- Handle Number Input ----
   const handleNumberInput = useCallback((num) => {
@@ -222,13 +277,20 @@ export default function App() {
     }
 
     // Save history for undo
-    setHistory(prev => [...prev, { board: board.map(r => [...r]), notes: notes.map(s => new Set(s)) }]);
+    setHistory(prev => [...prev, {
+      board: board.map(r => [...r]),
+      notes: notes.map(s => new Set(s)),
+      score,
+      streak,
+    }]);
 
     if (solution[r][c] !== num) {
       // Wrong answer - place it but mark as error
       const newBoard = board.map(row => [...row]);
       newBoard[r][c] = num;
       setBoard(newBoard);
+      setScore(current => Math.max(0, current - MISTAKE_PENALTY));
+      setStreak(0);
 
       const newMistakes = mistakes + 1;
       setMistakes(newMistakes);
@@ -241,6 +303,12 @@ export default function App() {
     // Correct answer
     const newBoard = board.map(row => [...row]);
     newBoard[r][c] = num;
+    const nextStreak = streak + 1;
+    const streakBonus = Math.floor(nextStreak / 3) * 20;
+    const pointsEarned = (SCORE_BY_DIFFICULTY[difficulty] || SCORE_BY_DIFFICULTY.easy) + streakBonus;
+    const nextScore = score + pointsEarned;
+    setScore(nextScore);
+    setStreak(nextStreak);
 
     // Clear notes for this cell and related cells
     setNotes(prev => {
@@ -266,6 +334,9 @@ export default function App() {
     if (checkWin(newBoard)) {
       setGameWon(true);
       localStorage.removeItem('sudoku_current_game');
+      const timeBonus = Math.max(0, 600 - timer) * 2;
+      const finalScore = nextScore + timeBonus;
+      setScore(finalScore);
       
       // Update Stats
       setStats(prev => {
@@ -276,7 +347,8 @@ export default function App() {
           [d]: {
             played: Math.max(prev[d].played, prev[d].won + 1),
             won: prev[d].won + 1,
-            bestTime: newBestTime
+            bestTime: newBestTime,
+            bestScore: Math.max(prev[d].bestScore || 0, finalScore)
           }
         };
       });
@@ -285,7 +357,7 @@ export default function App() {
         confetti({ particleCount: 200, spread: 80, origin: { y: 0.6 }, colors: ['#325aaf', '#4a90d9', '#ffd700', '#2ecc71'] });
       }, 300);
     }
-  }, [selectedCell, isGameActive, isPaused, initialBoard, isNotesMode, board, solution, mistakes, notes, checkWin, difficulty, timer]);
+  }, [selectedCell, isGameActive, isPaused, initialBoard, isNotesMode, board, solution, mistakes, notes, checkWin, difficulty, timer, score, streak]);
 
   // ---- Undo ----
   const handleUndo = useCallback(() => {
@@ -293,6 +365,8 @@ export default function App() {
     const prev = history[history.length - 1];
     setBoard(prev.board);
     setNotes(prev.notes);
+    setScore(prev.score || 0);
+    setStreak(prev.streak || 0);
     setHistory(h => h.slice(0, -1));
   }, [history]);
 
@@ -303,11 +377,16 @@ export default function App() {
     if (initialBoard[r][c] !== 0) return;
     if (board[r][c] === 0) return;
 
-    setHistory(prev => [...prev, { board: board.map(r => [...r]), notes: notes.map(s => new Set(s)) }]);
+    setHistory(prev => [...prev, {
+      board: board.map(r => [...r]),
+      notes: notes.map(s => new Set(s)),
+      score,
+      streak,
+    }]);
     const newBoard = board.map(row => [...row]);
     newBoard[r][c] = 0;
     setBoard(newBoard);
-  }, [selectedCell, isGameActive, initialBoard, board, notes]);
+  }, [selectedCell, isGameActive, initialBoard, board, notes, score, streak]);
 
   // ---- Hint ----
   const handleHint = useCallback(() => {
@@ -330,18 +409,40 @@ export default function App() {
     const [r, c] = target;
     if (board[r][c] !== 0) return;
 
-    setHistory(prev => [...prev, { board: board.map(r => [...r]), notes: notes.map(s => new Set(s)) }]);
+    setHistory(prev => [...prev, {
+      board: board.map(r => [...r]),
+      notes: notes.map(s => new Set(s)),
+      score,
+      streak,
+    }]);
     const newBoard = board.map(row => [...row]);
     newBoard[r][c] = solution[r][c];
     setBoard(newBoard);
+    const nextScore = Math.max(0, score - HINT_PENALTY);
+    setScore(nextScore);
+    setStreak(0);
 
     if (checkWin(newBoard)) {
       setGameWon(true);
+      localStorage.removeItem('sudoku_current_game');
+      setStats(prev => {
+        const d = difficulty;
+        const newBestTime = prev[d].bestTime === null || timer < prev[d].bestTime ? timer : prev[d].bestTime;
+        return {
+          ...prev,
+          [d]: {
+            played: Math.max(prev[d].played, prev[d].won + 1),
+            won: prev[d].won + 1,
+            bestTime: newBestTime,
+            bestScore: Math.max(prev[d].bestScore || 0, nextScore),
+          }
+        };
+      });
       setTimeout(() => {
         confetti({ particleCount: 200, spread: 80, origin: { y: 0.6 } });
       }, 300);
     }
-  }, [isGameActive, isPaused, selectedCell, board, initialBoard, solution, notes, checkWin]);
+  }, [isGameActive, isPaused, selectedCell, board, initialBoard, solution, notes, checkWin, score, streak, difficulty, timer]);
 
   // ---- Keyboard ----
   useEffect(() => {
@@ -423,8 +524,11 @@ export default function App() {
       {/* NAVBAR */}
       <nav className="navbar">
         <div className="navbar-brand">
-          <div className="navbar-logo">S</div>
-          <span className="navbar-title">Sudoku</span>
+          <div className="navbar-logo">9</div>
+          <div>
+            <span className="navbar-title">Sudoku Studio</span>
+            <span className="navbar-subtitle">daily logic trainer</span>
+          </div>
         </div>
         <div className="navbar-links">
           <button className="navbar-link" onClick={() => setShowStatsModal(true)} aria-label="Open statistics">
@@ -448,6 +552,7 @@ export default function App() {
 
       {/* DIFFICULTY TABS */}
       <div className="difficulty-bar">
+        <span className="difficulty-label">Difficulty</span>
         {DIFFICULTIES.map(d => (
           <button
             key={d}
@@ -466,13 +571,17 @@ export default function App() {
           <div className="game-left">
             {/* Info Bar */}
             <div className="game-info">
-              <div className="game-info-item">
-                <span>Difficulty:</span>
-                <span className="value">{difficulty.charAt(0).toUpperCase() + difficulty.slice(1)}</span>
+              <div className="game-info-item score-card">
+                <span>Score</span>
+                <span className="value">{score.toLocaleString()}</span>
               </div>
               <div className="game-info-item">
-                <span>Mistakes:</span>
+                <span>Mistakes</span>
                 <span className={`value ${mistakes > 0 ? 'error' : ''}`}>{mistakes}/{MAX_MISTAKES}</span>
+              </div>
+              <div className="game-info-item">
+                <span>Streak</span>
+                <span className="value">{streak}x</span>
               </div>
               <button
                 className="timer-btn"
@@ -571,8 +680,33 @@ export default function App() {
             </div>
           </div>
 
-          {/* RIGHT: ad placeholder or extra info */}
-          <aside className="game-right" aria-hidden="true"></aside>
+          {/* RIGHT: progress and scoring */}
+          <aside className="game-right">
+            <div className="side-panel">
+              <div className="side-panel-header">
+                <span className="eyebrow">Puzzle Flow</span>
+                <strong>{difficulty.charAt(0).toUpperCase() + difficulty.slice(1)}</strong>
+              </div>
+              <div className="progress-ring" style={{ '--progress': `${completionPercent}%` }}>
+                <span>{completionPercent}%</span>
+                <small>complete</small>
+              </div>
+              <div className="score-list">
+                <div>
+                  <span>Best score</span>
+                  <strong>{bestScore.toLocaleString()}</strong>
+                </div>
+                <div>
+                  <span>Correct move</span>
+                  <strong>+{SCORE_BY_DIFFICULTY[difficulty]}</strong>
+                </div>
+                <div>
+                  <span>Hint cost</span>
+                  <strong>-{HINT_PENALTY}</strong>
+                </div>
+              </div>
+            </div>
+          </aside>
         </div>
       </main>
 
@@ -641,6 +775,10 @@ export default function App() {
             <p className="modal-subtitle">You solved the puzzle!</p>
             <div className="modal-stats">
               <div className="modal-stat">
+                <div className="modal-stat-value">{score.toLocaleString()}</div>
+                <div className="modal-stat-label">Score</div>
+              </div>
+              <div className="modal-stat">
                 <div className="modal-stat-value">{formatTime(timer)}</div>
                 <div className="modal-stat-label">Time</div>
               </div>
@@ -687,9 +825,10 @@ export default function App() {
                     <span style={{ fontWeight: '700', textTransform: 'capitalize' }}>{d}</span>
                     <span style={{ color: 'var(--color-text-light)', fontSize: '0.85rem' }}>Played: {stats[d].played}</span>
                   </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.9rem' }}>
+                  <div style={{ display: 'grid', gap: '0.35rem', fontSize: '0.9rem' }}>
                     <span>Games Won: <span style={{ fontWeight: '600', color: 'var(--color-success)' }}>{stats[d].won}</span></span>
                     <span>Best Time: <span style={{ fontWeight: '600' }}>{stats[d].bestTime ? formatTime(stats[d].bestTime) : '--:--'}</span></span>
+                    <span>Best Score: <span style={{ fontWeight: '600', color: 'var(--color-primary)' }}>{(stats[d].bestScore || 0).toLocaleString()}</span></span>
                   </div>
                 </div>
               ))}
